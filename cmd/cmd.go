@@ -11,6 +11,9 @@
 //   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
+//
+//   Modifications for OpenTelemetry support:
+//   Copyright 2025 Robert B Gordon <rbg@openrbg.com>
 
 package cmd
 
@@ -33,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stern/stern/stern"
+	"github.com/stern/stern/stern/otel"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -91,6 +95,14 @@ type options struct {
 	podColors           []string
 	containerColors     []string
 
+	// OpenTelemetry options
+	otelEndpoint      string
+	otelProtocol      string
+	otelInsecure      bool
+	otelBatchSize     int
+	otelExportTimeout time.Duration
+	otelHeaders       map[string]string
+
 	client       kubernetes.Interface
 	clientConfig clientcmd.ClientConfig
 }
@@ -121,6 +133,13 @@ func NewOptions(streams genericclioptions.IOStreams) *options {
 		noFollow:            false,
 		maxLogRequests:      -1,
 		configFilePath:      defaultConfigFilePath,
+
+		otelEndpoint:      "localhost:4317",
+		otelProtocol:      "grpc",
+		otelInsecure:      true,
+		otelBatchSize:     512,
+		otelExportTimeout: 30 * time.Second,
+		otelHeaders:       make(map[string]string),
 	}
 }
 
@@ -311,6 +330,35 @@ func (o *options) sternConfig() (*stern.Config, error) {
 		}
 	}
 
+	// Initialize OpenTelemetry exporter if output is "otel"
+	var otelExporter *otel.Exporter
+	otelEnabled := o.output == "otel"
+	if otelEnabled {
+		ctx := context.Background()
+
+		// Create resource with cluster information
+		resource, err := otel.NewResource(ctx, o.clientConfig)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create OTel resource")
+		}
+
+		// Create exporter configuration
+		exporterConfig := &otel.ExporterConfig{
+			Endpoint:      o.otelEndpoint,
+			Protocol:      o.otelProtocol,
+			Insecure:      o.otelInsecure,
+			BatchSize:     o.otelBatchSize,
+			ExportTimeout: o.otelExportTimeout,
+			Headers:       o.otelHeaders,
+		}
+
+		// Create the exporter
+		otelExporter, err = otel.NewExporter(ctx, exporterConfig, resource)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create OTel exporter")
+		}
+	}
+
 	return &stern.Config{
 		Namespaces:            namespaces,
 		PodQuery:              pod,
@@ -340,6 +388,9 @@ func (o *options) sternConfig() (*stern.Config, error) {
 		Stdin:                 o.stdin,
 		DiffContainer:         o.diffContainer,
 
+		OTelEnabled:  otelEnabled,
+		OTelExporter: otelExporter,
+
 		Out:    o.Out,
 		ErrOut: o.ErrOut,
 	}, nil
@@ -347,14 +398,23 @@ func (o *options) sternConfig() (*stern.Config, error) {
 
 // setVerbosity sets the log level verbosity
 func (o *options) setVerbosity() error {
+	// Initialize klog flags
+	var fs goflag.FlagSet
+	klog.InitFlags(&fs)
+
 	if o.verbosity != 0 {
 		// klog does not have an external method to set verbosity,
 		// so we need to set it by a flag.
 		// See https://github.com/kubernetes/klog/issues/336 for details
-		var fs goflag.FlagSet
-		klog.InitFlags(&fs)
 		return fs.Set("v", strconv.Itoa(o.verbosity))
 	}
+
+	// Suppress klog output by default (set to stderr and verbosity to 0)
+	// This prevents Kubernetes client-go from polluting stern's output
+	_ = fs.Set("logtostderr", "false")
+	_ = fs.Set("alsologtostderr", "false")
+	_ = fs.Set("stderrthreshold", "FATAL")
+
 	return nil
 }
 
@@ -448,7 +508,7 @@ func (o *options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringSliceVarP(&o.namespaces, "namespace", "n", o.namespaces, "Kubernetes namespace to use. Default to namespace configured in kubernetes context. To specify multiple namespaces, repeat this or set comma-separated value.")
 	fs.StringVar(&o.node, "node", o.node, "Node name to filter on.")
 	fs.IntVar(&o.maxLogRequests, "max-log-requests", o.maxLogRequests, "Maximum number of concurrent logs to request. Defaults to 50, but 5 when specifying --no-follow")
-	fs.StringVarP(&o.output, "output", "o", o.output, "Specify predefined template. Currently support: [default, raw, json, extjson, ppextjson]")
+	fs.StringVarP(&o.output, "output", "o", o.output, "Specify predefined template. Currently support: [default, raw, json, extjson, ppextjson, otel]")
 	fs.BoolVarP(&o.prompt, "prompt", "p", o.prompt, "Toggle interactive prompt for selecting 'app.kubernetes.io/instance' label values.")
 	fs.StringVarP(&o.selector, "selector", "l", o.selector, "Selector (label query) to filter on. If present, default to \".*\" for the pod-query.")
 	fs.StringVar(&o.fieldSelector, "field-selector", o.fieldSelector, "Selector (field query) to filter on. If present, default to \".*\" for the pod-query.")
@@ -467,6 +527,13 @@ func (o *options) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVarP(&o.diffContainer, "diff-container", "d", o.diffContainer, "Display different colors for different containers.")
 	fs.StringSliceVar(&o.podColors, "pod-colors", o.podColors, "Specifies the colors used to highlight pod names. Provide colors as a comma-separated list using SGR (Select Graphic Rendition) sequences, e.g., \"91,92,93,94,95,96\".")
 	fs.StringSliceVar(&o.containerColors, "container-colors", o.containerColors, "Specifies the colors used to highlight container names. Use the same format as --pod-colors. Defaults to the values of --pod-colors if omitted, and must match its length.")
+
+	// OpenTelemetry flags (used when --output=otel)
+	fs.StringVar(&o.otelEndpoint, "otel-endpoint", o.otelEndpoint, "OpenTelemetry collector endpoint (e.g., localhost:4317 for gRPC, localhost:4318 for HTTP). Used with --output=otel")
+	fs.StringVar(&o.otelProtocol, "otel-protocol", o.otelProtocol, "OpenTelemetry protocol to use: 'grpc' or 'http'. Used with --output=otel")
+	fs.BoolVar(&o.otelInsecure, "otel-insecure", o.otelInsecure, "Use insecure connection to OpenTelemetry collector (no TLS). Used with --output=otel")
+	fs.IntVar(&o.otelBatchSize, "otel-batch-size", o.otelBatchSize, "Maximum batch size for OpenTelemetry log export. Used with --output=otel")
+	fs.DurationVar(&o.otelExportTimeout, "otel-export-timeout", o.otelExportTimeout, "Timeout for OpenTelemetry export operations. Used with --output=otel")
 
 	fs.Lookup("timestamps").NoOptDefVal = "default"
 }
@@ -531,8 +598,12 @@ func (o *options) generateTemplate() (*template.Template, error) {
 				t = fmt.Sprintf("  \"namespace\": \"{{color .PodColor .Namespace}}\",\n%s", t)
 			}
 			t = fmt.Sprintf("{\n%s\n}", t)
+		case "otel":
+			// For OpenTelemetry output, we don't need a template since logs are exported directly
+			// Set a minimal template to avoid errors, but it won't be used
+			t = ""
 		default:
-			return nil, errors.New("output should be one of 'default', 'raw', 'json', 'extjson', and 'ppextjson'")
+			return nil, errors.New("output should be one of 'default', 'raw', 'json', 'extjson', 'ppextjson', and 'otel'")
 		}
 		t += "\n"
 	}

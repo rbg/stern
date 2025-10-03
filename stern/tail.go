@@ -11,6 +11,9 @@
 //   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
+//
+//   Modifications for OpenTelemetry support:
+//   Copyright 2025 Robert B Gordon <rbg@openrbg.com>
 
 package stern
 
@@ -28,6 +31,7 @@ import (
 	"unicode"
 
 	"github.com/fatih/color"
+	"github.com/stern/stern/stern/otel"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -58,6 +62,8 @@ type Tail struct {
 	resumeRequest *ResumeRequest
 	out           io.Writer
 	errOut        io.Writer
+	otelExporter  *otel.Exporter
+	otelEnabled   bool
 }
 
 type ResumeRequest struct {
@@ -66,7 +72,7 @@ type ResumeRequest struct {
 }
 
 // NewTail returns a new tail for a Kubernetes container inside a pod
-func NewTail(clientset corev1client.CoreV1Interface, pod *corev1.Pod, containerName string, tmpl *template.Template, out, errOut io.Writer, options *TailOptions, diffContainer bool) *Tail {
+func NewTail(clientset corev1client.CoreV1Interface, pod *corev1.Pod, containerName string, tmpl *template.Template, out, errOut io.Writer, options *TailOptions, diffContainer bool, otelExporter *otel.Exporter, otelEnabled bool) *Tail {
 	podColor, containerColor := determineColor(pod.Name, containerName, diffContainer)
 
 	return &Tail{
@@ -79,8 +85,10 @@ func NewTail(clientset corev1client.CoreV1Interface, pod *corev1.Pod, containerN
 		podColor:       podColor,
 		containerColor: containerColor,
 
-		out:    out,
-		errOut: errOut,
+		out:          out,
+		errOut:       errOut,
+		otelExporter: otelExporter,
+		otelEnabled:  otelEnabled,
 	}
 }
 
@@ -147,7 +155,7 @@ func (t *Tail) Close() {
 }
 
 func (t *Tail) printStarting() {
-	if !t.Options.OnlyLogLines {
+	if !t.Options.OnlyLogLines && !t.otelEnabled {
 		g := color.New(color.FgHiGreen, color.Bold).SprintFunc()
 		p := t.podColor.SprintFunc()
 		c := t.containerColor.SprintFunc()
@@ -160,7 +168,7 @@ func (t *Tail) printStarting() {
 }
 
 func (t *Tail) printStopping() {
-	if !t.Options.OnlyLogLines {
+	if !t.Options.OnlyLogLines && !t.otelEnabled {
 		r := color.New(color.FgHiRed, color.Bold).SprintFunc()
 		p := t.podColor.SprintFunc()
 		c := t.containerColor.SprintFunc()
@@ -266,6 +274,17 @@ func (t *Tail) consumeLine(line string) {
 		return
 	}
 
+	// Parse timestamp for OTel
+	timestamp, parseErr := time.Parse(time.RFC3339Nano, rfc3339Nano)
+	if parseErr != nil {
+		timestamp = time.Now()
+	}
+
+	// Emit to OpenTelemetry if enabled
+	if t.otelEnabled && t.otelExporter != nil {
+		t.emitOTelLog(content, timestamp)
+	}
+
 	if t.Options.Timestamps {
 		updatedTs, err := t.Options.UpdateTimezoneAndFormat(rfc3339Nano)
 		if err != nil {
@@ -275,7 +294,26 @@ func (t *Tail) consumeLine(line string) {
 		content = updatedTs + " " + content
 	}
 
-	t.Print(content)
+	// Only print to stdout if not in OTel-only mode
+	if !t.otelEnabled {
+		t.Print(content)
+	}
+}
+
+// emitOTelLog sends a log record to OpenTelemetry
+func (t *Tail) emitOTelLog(message string, timestamp time.Time) {
+	record := &otel.LogRecord{
+		Timestamp:     timestamp,
+		Body:          message,
+		Namespace:     t.Pod.Namespace,
+		PodName:       t.Pod.Name,
+		ContainerName: t.ContainerName,
+		NodeName:      t.Pod.Spec.NodeName,
+		Labels:        t.Pod.Labels,
+		Annotations:   t.Pod.Annotations,
+	}
+
+	otel.EmitLog(context.Background(), t.otelExporter.Logger(), record)
 }
 
 func (t *Tail) rememberLastTimestamp(timestamp string) {

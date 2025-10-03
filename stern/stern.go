@@ -11,6 +11,9 @@
 //   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
+//
+//   Modifications for OpenTelemetry support:
+//   Copyright 2025 Robert B Gordon <rbg@openrbg.com>
 
 package stern
 
@@ -39,6 +42,17 @@ import (
 
 // Run starts the main run loop
 func Run(ctx context.Context, client kubernetes.Interface, config *Config) error {
+	// Ensure OTel exporter is shut down gracefully
+	if config.OTelEnabled && config.OTelExporter != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := config.OTelExporter.Shutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(config.ErrOut, "failed to shutdown OTel exporter: %v\n", err)
+			}
+		}()
+	}
+
 	var namespaces []string
 	// A specific namespace is ignored if all-namespaces is provided
 	if config.AllNamespaces {
@@ -66,7 +80,7 @@ func Run(ctx context.Context, client kubernetes.Interface, config *Config) error
 		}
 	}
 	newTail := func(t *Target) *Tail {
-		return NewTail(client.CoreV1(), t.Pod, t.Container, config.Template, config.Out, config.ErrOut, newTailOptions(), config.DiffContainer)
+		return NewTail(client.CoreV1(), t.Pod, t.Container, config.Template, config.Out, config.ErrOut, newTailOptions(), config.DiffContainer, config.OTelExporter, config.OTelEnabled)
 	}
 
 	if config.Stdin {

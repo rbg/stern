@@ -11,6 +11,9 @@
 //   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //   See the License for the specific language governing permissions and
 //   limitations under the License.
+//
+//   Modifications for OpenTelemetry support:
+//   Copyright 2025 Robert B Gordon <rbg@openrbg.com>
 
 package stern
 
@@ -20,6 +23,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/stern/stern/stern/otel"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -53,6 +57,10 @@ type Config struct {
 	MaxLogRequests        int
 	Stdin                 bool
 	DiffContainer         bool
+
+	// OpenTelemetry configuration
+	OTelEnabled  bool
+	OTelExporter *otel.Exporter
 
 	Out    io.Writer
 	ErrOut io.Writer

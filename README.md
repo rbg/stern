@@ -95,7 +95,7 @@ Supported Kubernetes resources are `pod`, `replicationcontroller`, `service`, `d
  `--no-follow`               | `false`                       | Exit when all logs have been shown.
  `--node`                    |                               | Node name to filter on.
  `--only-log-lines`          | `false`                       | Print only log lines
- `--output`, `-o`            | `default`                     | Specify predefined template. Currently support: [default, raw, json, extjson, ppextjson]
+ `--output`, `-o`            | `default`                     | Specify predefined template. Currently support: [default, raw, json, extjson, ppextjson, otel]
  `--pod-colors`              |                               | Specifies the colors used to highlight pod names. Provide colors as a comma-separated list using SGR (Select Graphic Rendition) sequences, e.g., "91,92,93,94,95,96".
  `--prompt`, `-p`            | `false`                       | Toggle interactive prompt for selecting 'app.kubernetes.io/instance' label values.
  `--selector`, `-l`          |                               | Selector (label query) to filter on. If present, default to ".*" for the pod-query.
@@ -142,6 +142,7 @@ templates which you can use by specifying the `--output` flag:
 | `json`      | Marshals the log struct to json. Useful for programmatic purposes                                     |
 | `extjson`   | Outputs extended JSON with colorized pod/container names                                              |
 | `ppextjson` | Pretty-prints extended JSON with colorized pod/container names                                        |
+| `otel`      | Exports logs to OpenTelemetry collector. See [OpenTelemetry Integration](#opentelemetry-integration) for details |
 
 It accepts a custom template through the `--template` flag, which will be
 compiled to a Go template and then used for every log message. This Go template
@@ -369,6 +370,89 @@ Only display logs for pods that are not ready:
 ```
 stern . --condition=ready=false --tail=0
 ```
+
+## OpenTelemetry Integration
+
+Stern can export logs directly to an OpenTelemetry collector for centralized log aggregation, analysis, and correlation with traces and metrics.
+
+### Quick Start
+
+```bash
+# Export logs to OTel collector via gRPC (default)
+stern my-app -o otel
+
+# Export to custom endpoint
+stern my-app -o otel --otel-endpoint=collector.example.com:4317
+
+# Export via HTTP protocol
+stern my-app -o otel --otel-protocol=http --otel-endpoint=localhost:4318
+```
+
+### Configuration Flags
+
+When using `-o otel`, the following flags configure the OTel exporter:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--otel-endpoint` | `localhost:4317` | OpenTelemetry collector endpoint |
+| `--otel-protocol` | `grpc` | Protocol to use (`grpc` or `http`) |
+| `--otel-insecure` | `true` | Use insecure connection (no TLS) |
+| `--otel-batch-size` | `512` | Maximum batch size for log export |
+| `--otel-export-timeout` | `30s` | Timeout for export operations |
+
+### Structured Log Support
+
+When exporting to OpenTelemetry, stern automatically detects and parses structured JSON logs (e.g., from Zap, Logrus, Bunyan):
+
+- Extracts `msg`/`message` field as the log body
+- Extracts `level`/`severity` field and maps to OTel severity levels
+- Adds all other JSON fields as OpenTelemetry attributes
+- Preserves all Kubernetes metadata (namespace, pod, container, node, labels, annotations)
+
+**Example**: A Zap log like:
+```json
+{"level":"info","ts":"2025-10-03T15:04:36.479Z","caller":"api/server.go:123","msg":"Request processed","user_id":12345,"duration_ms":45}
+```
+
+Will be exported with:
+- **Body**: "Request processed"
+- **Severity**: INFO
+- **Attributes**: ts, caller, user_id, duration_ms (plus all K8s metadata)
+
+### Example with OpenTelemetry Collector
+
+1. **Start the collector**:
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  logging:
+    loglevel: debug
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [logging]
+```
+
+```bash
+otelcol --config=otel-collector-config.yaml
+```
+
+2. **Export stern logs**:
+
+```bash
+stern . --all-namespaces -o otel
+```
+
+For more details, see [stern/otel/README.md](stern/otel/README.md).
 
 ## Completion
 

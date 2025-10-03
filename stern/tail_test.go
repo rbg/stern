@@ -117,7 +117,7 @@ line 4 (my-node/my-namespace/my-pod/my-container)
 					NodeName: "my-node",
 				},
 			}
-			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{}, false)
+			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{}, false, nil, false)
 			tail.resumeRequest = tt.resumeReq
 			if err := tail.ConsumeRequest(context.TODO(), &responseWrapperMock{data: bytes.NewBufferString(logLines)}); err != nil {
 				t.Fatalf("%d: unexpected err %v", i, err)
@@ -179,7 +179,7 @@ log 4 (my-namespace/my-pod/my-container)
 				},
 			}
 
-			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{Highlight: []*regexp.Regexp{regexp.MustCompile("line")}}, false)
+			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{Highlight: []*regexp.Regexp{regexp.MustCompile("line")}}, false, nil, false)
 			if err := tail.ConsumeRequest(context.TODO(), &responseWrapperMock{data: bytes.NewBufferString(tt.logLine)}); err != nil {
 				t.Fatalf("%d: unexpected err %v", i, err)
 			}
@@ -247,7 +247,7 @@ func TestInclude(t *testing.T) {
 				},
 			}
 
-			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{Include: []*regexp.Regexp{regexp.MustCompile("line")}}, false)
+			tail := NewTail(clientset.CoreV1(), pod, "my-container", tmpl, out, io.Discard, &TailOptions{Include: []*regexp.Regexp{regexp.MustCompile("line")}}, false, nil, false)
 			if err := tail.ConsumeRequest(context.TODO(), &responseWrapperMock{data: bytes.NewBufferString(tt.logLine)}); err != nil {
 				t.Fatalf("%d: unexpected err %v", i, err)
 			}
@@ -311,7 +311,7 @@ func TestPrintStarting(t *testing.T) {
 				Name:      "my-pod",
 			},
 		}
-		tail := NewTail(clientset.CoreV1(), pod, "my-container", nil, io.Discard, errOut, tt.options, false)
+		tail := NewTail(clientset.CoreV1(), pod, "my-container", nil, io.Discard, errOut, tt.options, false, nil, false)
 		tail.printStarting()
 
 		if !bytes.Equal(tt.expected, errOut.Bytes()) {
@@ -359,7 +359,7 @@ func TestPrintStopping(t *testing.T) {
 				Name:      "my-pod",
 			},
 		}
-		tail := NewTail(clientset.CoreV1(), pod, "my-container", nil, io.Discard, errOut, tt.options, false)
+		tail := NewTail(clientset.CoreV1(), pod, "my-container", nil, io.Discard, errOut, tt.options, false, nil, false)
 		tail.printStopping()
 
 		if !bytes.Equal(tt.expected, errOut.Bytes()) {
